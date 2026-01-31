@@ -1,0 +1,59 @@
+[project]
+name = "MAS"
+version = "0.1.0"
+description = "système multi-agent"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "chromadb",
+    "colorama",
+    "mcp[cli]",
+    "langchain-community",
+    "ollama",
+    "langchain-ollama",
+    "langgraph",
+    "uvicorn",
+    "typing",
+    "pydantic",
+    "langsmith",
+    "typing_extensions",
+    "langchain_mcp_adapters",
+    "langchain-core",
+    "streamlit",
+    "aiohttp",
+    "ipykernel",
+    "langchain_chroma",
+    "duckduckgo-search",
+    "pymupdf",
+    "sentence-transformers",
+    "langchain_chroma",
+    "langchain_huggingface",
+    "nest_asyncio",
+    "langgraph_supervisor",
+    "jsonpointer",
+    "mistralai",
+    "presidio_analyzer",
+    "presidio_anonymizer",
+    "mcp",
+    "langchain_google_genai",
+    "langchain_azure_ai",
+    "langchain-openai",
+    "langchain_mistralai",
+    "aiosqlite",
+    "langgraph.checkpoint.sqlite",
+    "langchain_mistralai",
+    "jsonpatch",
+    "fastapi",
+    "pip",
+    "langfuse",
+]
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["archives", "postgres","mcp_server", "shared_pdf", "shared_images"]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+]
