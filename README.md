@@ -240,16 +240,6 @@ MAS/
 
 ---
 
-## 📝 Roadmap
-
-- [ ] Support de modèles locaux supplémentaires (Mistral, Phi)
-- [ ] Interface web native sans dépendance à OpenWebUI
-- [ ] Amélioration de la détection PII pour d'autres langues
-- [ ] Système de cache pour les requêtes répétitives
-- [ ] Dashboard de monitoring en temps réel
-
----
-
 ## 📄 Licence
 
 Ce projet est sous licence MIT. Voir le fichier [LICENSE](LICENSE) pour plus de détails.
