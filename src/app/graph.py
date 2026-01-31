@@ -87,7 +87,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
 # Agents "locaux"
-llm_supervisor_local = ChatOllama(model="supervision")
+llm_supervisor_local = ChatOllama(model="supervisor")
 llm_simple_local = ChatOllama(model="llama3.2:3b")
 
 # Agents "cloud"
