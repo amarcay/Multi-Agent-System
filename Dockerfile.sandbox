@@ -1,0 +1,21 @@
+FROM python:3.13-slim
+
+# Installer les bibliothèques utiles pour les calculs et le traitement de données
+RUN pip install --no-cache-dir \
+    numpy \
+    pandas \
+    requests \
+    sympy \
+    scipy \
+    matplotlib
+
+# Créer un utilisateur non-root pour la sécurité
+RUN useradd -m -s /bin/bash sandbox
+
+# Définir le répertoire de travail
+USER sandbox
+WORKDIR /home/sandbox
+
+# Empêcher les imports de modules dangereux via PYTHONDONTWRITEBYTECODE
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1

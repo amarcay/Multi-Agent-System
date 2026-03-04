@@ -28,6 +28,9 @@ from presidio_analyzer.context_aware_enhancers import LemmaContextAwareEnhancer
 from presidio_anonymizer.entities import OperatorConfig
 from src.presidio.recognizer import *
 from src.agent.agent_web import WebAgent
+from src.agent.agent_codeact import CodeActAgent
+from src.memory.memory_manager import MemoryManager
+from src.memory.memory_extractor import extract_facts, generate_summary
 
 nlp_config = {"nlp_engine_name": "spacy", "models": [{"lang_code": "fr", "model_name": "fr_core_news_lg"}]}
 provider = NlpEngineProvider(nlp_configuration=nlp_config)
@@ -87,12 +90,14 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
 # Agents "locaux"
-llm_supervisor_local = ChatOllama(model="supervisor")
+llm_supervisor_local = ChatOpenAI(model="gpt-4.1") #ChatOllama(model="supervisor")
 llm_simple_local = ChatOllama(model="llama3.2:3b")
 
 # Agents "cloud"
 llm_simple_cloud = ChatGoogleGenerativeAI(model="gemini-2.5-flash",convert_system_message_to_human=True)
 llm_web_cloud = ChatOpenAI(model="gpt-4.1")
+llm_codeact_cloud = ChatGoogleGenerativeAI(model="gemini-2.5-flash", convert_system_message_to_human=True)
+llm_memory_extractor = ChatOllama(model="llama3.2:3b")
 
 
 # --- Initialisation ---
@@ -132,7 +137,7 @@ def has_document_context(messages: list) -> bool:
 # --- Définition des états et des routes ---
 class Router(TypedDict):
     """Définit la prochaine étape choisie par le superviseur."""
-    next: Literal["Agent_WEB_Cloud", "Agent_RAG_Document", "Agent_Simple_Cloud","Agent_Simple_Local", "FINISH"]
+    next: Literal["Agent_WEB_Cloud", "Agent_RAG_Document", "Agent_Simple_Cloud", "Agent_Simple_Local", "Agent_CodeAct_Cloud", "FINISH"]
 
 class Webquery(TypedDict):
     """Représente une requête web avec le champ 'query' de type str."""
@@ -145,18 +150,27 @@ class State(TypedDict):
     next: str
     web_sub_query: str | None
     is_confidential: bool | None
-    anonymized_text: str | None 
-    human_approved: bool | None  
+    anonymized_text: str | None
+    human_approved: bool | None
+    retrieved_memories: list[str] | None
 
 # --- Création du Graphe et des Agents ---
 
-async def make_graph(checkpointer: AsyncSqliteSaver | None = None):
+async def make_graph(checkpointer: AsyncSqliteSaver | None = None, memory_manager: MemoryManager | None = None):
     print("--- Création du graph... ---\n")
     print("\t--- Création des Agents... ---\n")
 
     # Création du WebAgent
     web_agent = WebAgent(llm=llm_web_cloud)
     await web_agent.initialize()
+
+    # Création du CodeActAgent
+    codeact_agent = CodeActAgent(llm=llm_codeact_cloud)
+    try:
+        await codeact_agent.initialize()
+    except Exception as e:
+        print(f"⚠️ CodeActAgent non disponible (Docker requis): {e}")
+        codeact_agent = None
 
     print("\t\t--- Création des Nœuds... ---\n")
 
@@ -301,7 +315,7 @@ async def make_graph(checkpointer: AsyncSqliteSaver | None = None):
             print("--- Refus reçu. Annulation de l'anonymisation. ---")
             return {"human_approved": False}
 
-    members = ["Agent_Simple_Local", "Agent_WEB_Cloud", "Agent_Simple_Cloud", "Agent_RAG_Document"]
+    members = ["Agent_Simple_Local", "Agent_WEB_Cloud", "Agent_Simple_Cloud", "Agent_RAG_Document", "Agent_CodeAct_Cloud"]
     
     def supervisor_node(state: State, config: RunnableConfig):
         """Choisit le prochain agent à exécuter en fonction de la demande utilisateur."""
@@ -321,16 +335,18 @@ Vous êtes un superviseur chargé de router les requêtes vers l'agent le plus a
 ## Compétences de chaque agent :
 - **Agent_RAG_Document** : analyse de documents fournis en contexte (PDFs, sources, fichiers)
 - **Agent_WEB_Cloud** : recherche web, données actuelles (météo, actualités, lieux, commerces, prix, événements, informations à jour)
-- **Agent_Simple_Local** : réponses instantanées pour tâches simples ne nécessitant PAS d'informations externes (calculs, reformulations, explications de concepts connus, conversations générales)
+- **Agent_Simple_Local** : réponses instantanées pour tâches simples ne nécessitant PAS d'informations externes (reformulations, explications de concepts connus, conversations générales)
 - **Agent_Simple_Cloud** : analyses complexes, raisonnement avancé, synthèses élaborées (sans données sensibles)
+- **Agent_CodeAct_Cloud** : exécution de code Python, calculs mathématiques, traitement de données, analyses numériques, résolution de problèmes nécessitant du code
 
 ## Règles de routage (dans l'ordre de priorité) :
 
 1. Document fourni en contexte → **Agent_RAG_Document**
 2. Requête contenant des PII ou données sensibles → **Agent_Simple_Local**
-3. Requête nécessitant des informations du monde réel actuelles (lieux, commerces, restaurants, horaires, météo, actualités, prix, événements, personnes, entreprises) → **Agent_WEB_Cloud**
-4. Tâche complexe nécessitant un raisonnement approfondi → **Agent_Simple_Cloud**
-5. Tâche simple basée uniquement sur des connaissances générales → **Agent_Simple_Local**
+3. Nécessite calculs, code Python, traitement de données, analyses numériques → **Agent_CodeAct_Cloud**
+4. Requête nécessitant des informations du monde réel actuelles (lieux, commerces, restaurants, horaires, météo, actualités, prix, événements, personnes, entreprises) → **Agent_WEB_Cloud**
+5. Tâche complexe nécessitant un raisonnement approfondi → **Agent_Simple_Cloud**
+6. Tâche simple basée uniquement sur des connaissances générales → **Agent_Simple_Local**
 
 ## Exemples :
 
@@ -352,8 +368,14 @@ Utilisateur : "Explique-moi la théorie de la relativité en termes simples."
 Utilisateur : "Analyse les implications philosophiques de l'IA sur le marché du travail"
 {{"next": "Agent_Simple_Cloud"}}
 
+Utilisateur : "Calcule la somme des 100 premiers nombres premiers"
+{{"next": "Agent_CodeAct_Cloud"}}
+
+Utilisateur : "Écris un script Python qui trie une liste de nombres"
+{{"next": "Agent_CodeAct_Cloud"}}
+
 Utilisateur : "Combien font 15 + 27 ?"
-{{"next": "Agent_Simple_Local"}}
+{{"next": "Agent_CodeAct_Cloud"}}
 
 Utilisateur : "Bonjour, comment vas-tu ?"
 {{"next": "Agent_Simple_Local"}}
@@ -439,21 +461,22 @@ Répondez **uniquement** avec un objet JSON valide :
         session_id = config["configurable"]["session_id"]
         chat_history = get_chat_history(session_id)
         user_query = state["messages"][-1]
+        memory_context = _build_memory_context(state)
 
         system_prompt = (
             f"""Tu es un assistant conversationnel. Aujourd'hui, nous sommes le {today_date}, il est {hour}.
-            En te basant sur l'historique complet de la conversation ci-dessous, 
-            réponds à la dernière question de l'utilisateur. 
+            En te basant sur l'historique complet de la conversation ci-dessous,
+            réponds à la dernière question de l'utilisateur.
             Utilise les informations des messages précédents si c'est pertinent.
-            Tu ne dois jamais t'excuser.
+            Tu ne dois jamais t'excuser.{memory_context}
             """
         )
-    
+
         messages_with_history = [SystemMessage(content=system_prompt)] + list(chat_history.messages)[-15:] + [user_query]
         response = await llm_simple_local.with_config(tags=["final_answer"]).ainvoke(messages_with_history)
         ai_message = AIMessage(content=response.content, name="Agent_Simple_Local")
         chat_history.add_messages([user_query, ai_message])
-        
+
         print(f"Agent Simple Local : {response.content[:200]}...")
         return {"messages": [ai_message]}
     
@@ -464,18 +487,19 @@ Répondez **uniquement** avec un objet JSON valide :
         session_id = config["configurable"]["session_id"]
         chat_history = get_chat_history(session_id)
         user_query = state["messages"][-1]
-        
+        memory_context = _build_memory_context(state)
+
         system_prompt = (
             f"""Tu es un assistant conversationnel. Aujourd'hui, nous sommes le {today_date}, il est {hour}.
-            En te basant sur l'historique complet de la conversation ci-dessous, 
-            réponds à la dernière question de l'utilisateur. 
+            En te basant sur l'historique complet de la conversation ci-dessous,
+            réponds à la dernière question de l'utilisateur.
             Utilise les informations des messages précédents si c'est pertinent.
-            Tu ne dois jamais t'excuser.
+            Tu ne dois jamais t'excuser.{memory_context}
             """
         )
-    
+
         messages_with_history = [SystemMessage(content=system_prompt)] + list(chat_history.messages)[-15:] + [user_query]
-        
+
         # IMPORTANT: Ajouter le tag final_answer
         response = await llm_simple_cloud.with_config(tags=["final_answer"]).ainvoke(messages_with_history)
         ai_message = AIMessage(content=response.content, name="Agent_Simple_Cloud")
@@ -484,33 +508,133 @@ Répondez **uniquement** avec un objet JSON valide :
         print(f"Agent Simple Cloud : {response.content[:200]}...")
         return {"messages": [ai_message]}
     
+    # --- Nœuds Mémoire ---
+
+    async def memory_retrieval_node(state: State, config: RunnableConfig) -> dict:
+        """Recherche les mémoires pertinentes pour la requête utilisateur."""
+        if not memory_manager:
+            return {"retrieved_memories": []}
+
+        print("--- Executing Memory Retrieval Node ---")
+        check_config(config)
+        session_id = config["configurable"]["session_id"]
+
+        last_message = state["messages"][-1]
+        query = last_message.content if isinstance(last_message.content, str) else str(last_message.content)
+
+        try:
+            # Recherche de faits pertinents (session + global)
+            session_memories = await memory_manager.retrieve_memories(session_id, query, top_k=3)
+            global_memories = await memory_manager.retrieve_all_memories(query, top_k=2)
+
+            # Dédupliquer
+            all_memories = list(dict.fromkeys(session_memories + global_memories))
+
+            # Récupérer les résumés récents
+            summaries = await memory_manager.get_recent_summaries(session_id, limit=1)
+            if summaries:
+                all_memories.append(f"[Résumé précédent] {summaries[0]}")
+
+            print(f"--- {len(all_memories)} mémoire(s) récupérée(s) ---")
+            return {"retrieved_memories": all_memories}
+        except Exception as e:
+            print(f"--- Erreur lors de la récupération des mémoires : {e} ---")
+            return {"retrieved_memories": []}
+
+    async def memory_extraction_node(state: State, config: RunnableConfig) -> dict:
+        """Extrait les faits et génère un résumé après la réponse de l'agent."""
+        if not memory_manager:
+            return {}
+
+        print("--- Executing Memory Extraction Node ---")
+        check_config(config)
+        session_id = config["configurable"]["session_id"]
+
+        # Prendre les derniers messages de la conversation
+        recent_messages = state["messages"][-4:]
+
+        try:
+            # Extraire les faits en parallèle avec le résumé
+            facts = await extract_facts(recent_messages, llm_memory_extractor)
+            if facts:
+                await memory_manager.add_facts(session_id, facts)
+                print(f"--- {len(facts)} fait(s) extrait(s) et sauvegardé(s) ---")
+
+            summary = await generate_summary(recent_messages, llm_memory_extractor)
+            if summary:
+                await memory_manager.add_summary(session_id, summary)
+                print(f"--- Résumé sauvegardé ---")
+        except Exception as e:
+            print(f"--- Erreur lors de l'extraction mémoire : {e} ---")
+
+        return {}
+
+    def _build_memory_context(state: State) -> str:
+        """Construit le contexte mémoire à injecter dans les prompts agents."""
+        memories = state.get("retrieved_memories")
+        if not memories:
+            return ""
+
+        memory_lines = "\n".join(f"- {m}" for m in memories)
+        return f"\n\n## Informations mémorisées des conversations précédentes :\n{memory_lines}\n"
+
+    # --- Nœud CodeAct ---
+
+    async def agent_codeact_cloud_node(state: State, config: RunnableConfig) -> dict:
+        """Exécute l'agent CodeAct pour les tâches nécessitant du code Python."""
+        print("--- Executing Agent CodeAct Cloud ---")
+        check_config(config)
+        session_id = config["configurable"]["session_id"]
+        chat_history = get_chat_history(session_id)
+
+        if codeact_agent is None:
+            ai_message = AIMessage(
+                content="L'agent CodeAct n'est pas disponible. Docker est requis pour exécuter du code. "
+                        "Veuillez installer Docker et redémarrer le serveur.",
+                name="Agent_CodeAct_Cloud"
+            )
+            chat_history.add_messages([state["messages"][-1], ai_message])
+            return {"messages": [ai_message]}
+
+        return await codeact_agent.invoke(
+            state=state,
+            config=config,
+            chat_history=chat_history,
+        )
+
     print("\t\t--- Création des Nœuds OK ---\n")
     print("\t--- Création des Agents OK ---\n")
-    
+
     # --- Assemblage du Graphe ---
     builder = StateGraph(State)
 
     builder.add_node("supervisor", supervisor_node)
+    builder.add_node("memory_retrieval", memory_retrieval_node)
     builder.add_node("Agent_Simple_Local", agent_simple_local_node)
     builder.add_node("Agent_RAG_Document", agent_rag_document_node)
     builder.add_node("Agent_Simple_Cloud", agent_simple_cloud_node)
     builder.add_node("Agent_WEB_Cloud", agent_web_cloud_node)
+    builder.add_node("Agent_CodeAct_Cloud", agent_codeact_cloud_node)
     builder.add_node("Agent_Confidentiel", confidentiality_check_node)
     builder.add_node("anonymizer", anonymizer_node)
     builder.add_node("human_approval", human_approval_node)
+    builder.add_node("memory_extraction", memory_extraction_node)
 
     builder.set_entry_point("supervisor")
+
+    # Supervisor → memory_retrieval
+    builder.add_edge("supervisor", "memory_retrieval")
 
     def should_check_confidentiality(state: State):
         """Vérifie si on doit passer par le check de confidentialité."""
         destination = state.get("next")
-        if destination in ["Agent_WEB_Cloud", "Agent_Simple_Cloud"]:
+        if destination in ["Agent_WEB_Cloud", "Agent_Simple_Cloud", "Agent_CodeAct_Cloud"]:
             return "Agent_Confidentiel"
         else:
             return destination
 
     builder.add_conditional_edges(
-        "supervisor",
+        "memory_retrieval",
         should_check_confidentiality,
         {
             "Agent_Confidentiel": "Agent_Confidentiel",
@@ -535,6 +659,7 @@ Répondez **uniquement** avec un objet JSON valide :
             "human_approval": "human_approval",
             "Agent_WEB_Cloud": "Agent_WEB_Cloud",
             "Agent_Simple_Cloud": "Agent_Simple_Cloud",
+            "Agent_CodeAct_Cloud": "Agent_CodeAct_Cloud",
         }
     )
 
@@ -555,6 +680,7 @@ Répondez **uniquement** avec un objet JSON valide :
             "anonymizer": "anonymizer",
             "Agent_WEB_Cloud": "Agent_WEB_Cloud",
             "Agent_Simple_Cloud": "Agent_Simple_Cloud",
+            "Agent_CodeAct_Cloud": "Agent_CodeAct_Cloud",
         }
     )
 
@@ -563,18 +689,22 @@ Répondez **uniquement** avec un objet JSON valide :
         return state.get("next")
 
     builder.add_conditional_edges(
-        "anonymizer", 
-        route_after_anonymization, 
+        "anonymizer",
+        route_after_anonymization,
         {
             "Agent_WEB_Cloud": "Agent_WEB_Cloud",
             "Agent_Simple_Cloud": "Agent_Simple_Cloud",
+            "Agent_CodeAct_Cloud": "Agent_CodeAct_Cloud",
         }
     )
 
-    builder.add_edge("Agent_RAG_Document", END)
-    builder.add_edge("Agent_Simple_Local", END)
-    builder.add_edge("Agent_Simple_Cloud", END)
-    builder.add_edge("Agent_WEB_Cloud", END)
+    # Agents → memory_extraction → END
+    builder.add_edge("Agent_RAG_Document", "memory_extraction")
+    builder.add_edge("Agent_Simple_Local", "memory_extraction")
+    builder.add_edge("Agent_Simple_Cloud", "memory_extraction")
+    builder.add_edge("Agent_WEB_Cloud", "memory_extraction")
+    builder.add_edge("Agent_CodeAct_Cloud", "memory_extraction")
+    builder.add_edge("memory_extraction", END)
 
     graph = builder.compile(checkpointer=checkpointer).with_config(run_name="MAS-ASI-V1-HITL-Production")
     print("--- Création du Graphe OK ---\n")

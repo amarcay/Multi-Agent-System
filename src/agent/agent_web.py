@@ -1,7 +1,7 @@
 # MCP
 from langchain_mcp_adapters.client import MultiServerMCPClient
 # Langgraph
-from langchain.agents import create_agent
+from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.chat_history import InMemoryChatMessageHistory
@@ -63,11 +63,10 @@ class WebAgent:
         hour = datetime.now().strftime('%H:%M')
 
         # Création de l'agent
-        self.agent = create_agent(
+        self.agent = create_react_agent(
             self.llm,
             tools=web_tools,
-            debug=False,
-            system_prompt=f"""
+            prompt=f"""
             Tu es un assistant qui doit absolument utiliser l'outil web_search pour répondre aux questions.
             Ne réponds jamais sans utiliser cet outil.
             Tu ne dois jamais t'excuser.
