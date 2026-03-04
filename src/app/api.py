@@ -17,7 +17,8 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.getcwd(), "..")))
 
-from .graph import make_graph 
+from .graph import make_graph
+from src.memory.memory_manager import MemoryManager
 
 app = FastAPI()
 
@@ -67,12 +68,19 @@ async def startup_event():
     print("🚀 Initialisation du graphe...")
     app.state.db_conn = await aiosqlite.connect("memory.sqlite", check_same_thread=False)
     app.state.checkpointer = AsyncSqliteSaver(conn=app.state.db_conn)
-    app.state.graph = await make_graph(checkpointer=app.state.checkpointer)
+    app.state.memory_manager = MemoryManager(persist_dir="./data/memory_chroma")
+    print("✅ MemoryManager initialisé (persistance: ./data/memory_chroma)")
+    app.state.graph = await make_graph(
+        checkpointer=app.state.checkpointer,
+        memory_manager=app.state.memory_manager,
+    )
     print("✅ Graphe initialisé et prêt à recevoir des requêtes")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     await app.state.db_conn.close()
+    if hasattr(app.state, "memory_manager"):
+        app.state.memory_manager.cleanup()
     langfuse_client.flush()
     print("API SHUTDOWN")
 

@@ -46,6 +46,8 @@ dependencies = [
     "fastapi",
     "pip",
     "langfuse",
+    "langgraph-codeact>=0.1.0",
+    "docker>=7.0.0",
 ]
 [tool.setuptools.packages.find]
 where = ["."]
